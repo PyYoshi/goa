@@ -362,15 +362,53 @@ func transformArray(source, target *expr.Array, sourceVar, targetVar string, new
 
 // transformArrayElem generates Go code to transform an object field of type array.
 func transformArrayElem(source, target *expr.Array, sourceVar, targetVar string, newVar bool, ta *transformAttrs) (string, error) {
-	st, tt := source.ElemType.Type, target.ElemType.Type
-	if err := codegen.IsCompatible(st, tt, sourceVar+"[0]", targetVar+"[0]"); err != nil {
-		return "", err
+	targetRef := ta.TargetCtx.Scope.Ref(target.ElemType, ta.TargetCtx.Pkg)
+
+	var (
+		code string
+		err  error
+	)
+
+	// If targetInit is set, the target array element is in a nested state.
+	// See grpc/docs/FAQ.md.
+	if ta.targetInit != "" {
+		assign := "="
+		if newVar {
+			assign = ":="
+		}
+		code = fmt.Sprintf("%s %s &%s{}\n", targetVar, assign, ta.targetInit)
+		ta.targetInit = ""
 	}
-	if _, ok := st.(expr.UserType); ok {
+	if ta.wrapped {
+		if ta.proto {
+			targetVar += ".Field"
+			newVar = false
+		} else {
+			sourceVar += ".Field"
+		}
+		ta.wrapped = false
+	}
+
+	src := source.ElemType
+	tgt := target.ElemType
+	if err = codegen.IsCompatible(src.Type, tgt.Type, "[0]", "[0]"); err != nil {
+		if ta.proto {
+			ta.targetInit = ta.TargetCtx.Scope.Name(tgt, ta.TargetCtx.Pkg)
+			tgt = unwrapAttr(expr.DupAtt(tgt))
+		} else {
+			src = unwrapAttr(expr.DupAtt(src))
+		}
+		ta.wrapped = true
+		if err = codegen.IsCompatible(src.Type, tgt.Type, "[0]", "[0]"); err != nil {
+			return "", err
+		}
+	}
+
+	if _, ok := src.Type.(expr.UserType); ok {
 		data := map[string]interface{}{
-			"ElemTypeRef":    ta.TargetCtx.Scope.Ref(target.ElemType, ta.TargetCtx.Pkg),
-			"SourceElem":     source.ElemType,
-			"TargetElem":     target.ElemType,
+			"ElemTypeRef":    targetRef,
+			"SourceElem":     src,
+			"TargetElem":     tgt,
 			"SourceVar":      sourceVar,
 			"TargetVar":      targetVar,
 			"NewVar":         newVar,
@@ -381,7 +419,7 @@ func transformArrayElem(source, target *expr.Array, sourceVar, targetVar string,
 		if err := transformGoArrayElemT.Execute(&buf, data); err != nil {
 			return "", err
 		}
-		return buf.String(), nil
+		return code + buf.String(), nil
 	}
 	return transformArray(source, target, sourceVar, targetVar, newVar, ta)
 }
