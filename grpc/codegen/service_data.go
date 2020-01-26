@@ -956,8 +956,7 @@ func buildInitData(source, target *expr.AttributeExpr, sourceVar, targetVar stri
 		}
 		code, helpers, err = protoBufTransform(source, target, sourceVar, targetVar, srcCtx, tgtCtx, proto)
 		if err != nil {
-			fmt.Println(err.Error()) // TBD validate DSL so errors are not possible
-			return nil
+			panic(err)
 		}
 		sd.transformHelpers = codegen.AppendHelpers(sd.transformHelpers, helpers)
 		if (!proto && !isEmpty(source.Type)) || (proto && !isEmpty(target.Type)) {

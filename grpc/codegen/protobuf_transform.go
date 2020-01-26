@@ -463,20 +463,63 @@ func transformMap(source, target *expr.Map, sourceVar, targetVar string, newVar 
 
 // transformMapElem generates Go code to transform an object field of type map.
 func transformMapElem(source, target *expr.Map, sourceVar, targetVar string, newVar bool, ta *transformAttrs) (string, error) {
+	// Target map key cannot be nested in protocol buffers. So no need to worry
+	// about unwrapping.
 	if err := codegen.IsCompatible(source.KeyType.Type, target.KeyType.Type, sourceVar+"[key]", targetVar+"[key]"); err != nil {
 		return "", err
 	}
-	if err := codegen.IsCompatible(source.ElemType.Type, target.ElemType.Type, sourceVar+"[*]", targetVar+"[*]"); err != nil {
-		return "", err
+
+	targetKeyRef := ta.TargetCtx.Scope.Ref(target.KeyType, ta.TargetCtx.Pkg)
+	targetElemRef := ta.TargetCtx.Scope.Ref(target.ElemType, ta.TargetCtx.Pkg)
+
+	var (
+		code string
+		err  error
+	)
+
+	// If targetInit is set, the target map element is in a nested state.
+	// See grpc/docs/FAQ.md.
+	if ta.targetInit != "" {
+		assign := "="
+		if newVar {
+			assign = ":="
+		}
+		code = fmt.Sprintf("%s %s &%s{}\n", targetVar, assign, ta.targetInit)
+		ta.targetInit = ""
 	}
+	if ta.wrapped {
+		if ta.proto {
+			targetVar += ".Field"
+			newVar = false
+		} else {
+			sourceVar += ".Field"
+		}
+		ta.wrapped = false
+	}
+
+	src := source.ElemType
+	tgt := target.ElemType
+	if err = codegen.IsCompatible(src.Type, tgt.Type, "[*]", "[*]"); err != nil {
+		if ta.proto {
+			ta.targetInit = ta.TargetCtx.Scope.Name(tgt, ta.TargetCtx.Pkg)
+			tgt = unwrapAttr(expr.DupAtt(tgt))
+		} else {
+			src = unwrapAttr(expr.DupAtt(src))
+		}
+		ta.wrapped = true
+		if err = codegen.IsCompatible(src.Type, tgt.Type, "[*]", "[*]"); err != nil {
+			return "", err
+		}
+	}
+
 	if _, ok := target.ElemType.Type.(expr.UserType); ok {
 		data := map[string]interface{}{
-			"KeyTypeRef":     ta.TargetCtx.Scope.Ref(target.KeyType, ta.TargetCtx.Pkg),
-			"ElemTypeRef":    ta.TargetCtx.Scope.Ref(target.ElemType, ta.TargetCtx.Pkg),
+			"KeyTypeRef":     targetKeyRef,
+			"ElemTypeRef":    targetElemRef,
 			"SourceKey":      source.KeyType,
 			"TargetKey":      target.KeyType,
-			"SourceElem":     source.ElemType,
-			"TargetElem":     target.ElemType,
+			"SourceElem":     src,
+			"TargetElem":     tgt,
 			"SourceVar":      sourceVar,
 			"TargetVar":      targetVar,
 			"NewVar":         newVar,
@@ -490,7 +533,7 @@ func transformMapElem(source, target *expr.Map, sourceVar, targetVar string, new
 		if err := transformGoMapElemT.Execute(&buf, data); err != nil {
 			return "", err
 		}
-		return buf.String(), nil
+		return code + buf.String(), nil
 	}
 	return transformMap(source, target, sourceVar, targetVar, newVar, ta)
 }
